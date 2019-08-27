@@ -17,11 +17,6 @@ from sympl import (
 import numpy as np
 from datetime import timedelta
 import matplotlib.pyplot as plt
-# Necessary to supress annying matplotlib warnings
-import warnings
-import matplotlib
-warnings.filterwarnings("ignore",category=matplotlib.MatplotlibDeprecationWarning)
-warnings.filterwarnings("ignore",category=FutureWarning)
 from tqdm import tqdm_notebook as tqdm
 import pickle
 import xarray as xr
