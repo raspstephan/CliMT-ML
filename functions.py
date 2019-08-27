@@ -67,6 +67,7 @@ output_vars = [
 ]
 
 class MyModel():
+    """Climate model class."""
     def __init__(self, dt_seconds=1800, nx=64, ny=32, nz=10, state=None,
                  input_fields_to_store=input_vars,
                  output_fields_to_store=output_vars,
@@ -75,6 +76,10 @@ class MyModel():
                  save_interval=6,
                  convection=None
                 ):
+        """
+        Initialize model. Uses SSTs from Andersen and Kuang 2012.
+        Creates initial state unless state is given.
+        """
         climt.set_constants_from_dict({
             'stellar_irradiance': {'value': 200, 'units': 'W m^-2'}})
 
@@ -83,10 +88,13 @@ class MyModel():
         self.save_interval = save_interval
 
         # Create components
-        if convection is None: convection = MyEmanuelConvection()
-        simple_physics = TimeDifferencingWrapper(climt.SimplePhysics())
+        if convection is None: 
+            convection = climt.EmanuelConvection(tendencies_in_diagnostics=True)
+        simple_physics = TimeDifferencingWrapper(
+            climt.SimplePhysics(tendencies_in_diagnostics=True))
 
-        radiation = climt.GrayLongwaveRadiation()
+        radiation = climt.GrayLongwaveRadiation(
+            tendencies_in_diagnostics=True)
 
         self.dycore = climt.GFSDynamicalCore(
             [simple_physics, radiation,
@@ -98,9 +106,6 @@ class MyModel():
             self.create_initial_state(grid)
         else:
             self.state = state
-        
-        self.state_history = [self.state]
-        self.diag_history = []
         
         self.input_netcdf_monitor = NetCDFMonitor(
             input_save_fn,
@@ -114,28 +119,21 @@ class MyModel():
         )
         
     def create_initial_state(self, grid):
+        """Create initial state."""
         # Create model state
         self.state = climt.get_default_state([self.dycore], grid_state=grid)
 
         # Set initial/boundary conditions
         latitudes = self.state['latitude'].values
-        longitudes = self.state['longitude'].values
-        surface_shape = latitudes.shape
-
-        temperature_equator = 300
-        temperature_pole = 240
-
-        temperature_profile = temperature_equator - (
-            (temperature_equator - temperature_pole)*(
-                np.sin(np.radians(latitudes))**2))
-
-        self.state['surface_temperature'] = DataArray(
-            temperature_profile*np.ones(surface_shape),
+        sst_k = and_kua_sst(latitudes)
+        
+        self.state['surface_temperature'] = DataArray(sst_k,
             dims=['lat', 'lon'], attrs={'units': 'degK'})
         self.state['eastward_wind'].values[:] = np.random.randn(
             *self.state['eastward_wind'].shape)
         
     def step(self):
+        """Take one time step forward."""
         self.diag, self.state = self.dycore(self.state, self.model_time_step)
         self.state.update(self.diag)
         self.state['time'] += self.model_time_step
@@ -146,123 +144,7 @@ class MyModel():
         self.step_counter += 1
     
     def iterate(self, steps, noprog=False):
+        """Iterate over several time steps."""
         for i in tqdm(range(steps), disable=noprog):
             self.step()
             
-class MyEmanuelConvection(climt.EmanuelConvection):
-    def __init__(self, **kwargs):
-        self.diagnostic_properties = {
-            'convective_state': {
-                'dims': ['*'],
-                'units': 'dimensionless',
-                'dtype': np.int32,
-            },
-            'convective_precipitation_rate': {
-                'dims': ['*'],
-                'units': 'mm day^-1',
-            },
-            'convective_downdraft_velocity_scale': {
-                'dims': ['*'],
-                'units': 'm s^-1',
-            },
-            'convective_downdraft_temperature_scale': {
-                'dims': ['*'],
-                'units': 'degK',
-            },
-            'convective_downdraft_specific_humidity_scale': {
-                'dims': ['*'],
-                'units': 'kg/kg',
-            },
-            'cloud_base_mass_flux': {
-                'dims': ['*'],
-                'units': 'kg m^-2 s^-1',
-            },
-            'atmosphere_convective_available_potential_energy': {
-                'dims': ['*'],
-                'units': 'J kg^-1',
-            },
-            'air_temperature_tendency_from_convection': {
-                'dims': ['*', 'mid_levels'],
-                'units': 'degK s^-1',
-            },
-            'specific_humidity_tendency_from_convection': {
-                'dims': ['*', 'mid_levels'],
-                'units': 'kg/kg s^-1',
-            },
-            'eastward_wind_tendency_from_convection': {
-                'dims': ['*', 'mid_levels'],
-                'units': 'm s^-2',
-            },
-            'northward_wind_tendency_from_convection': {
-                'dims': ['*', 'mid_levels'],
-                'units': 'm s^-2',
-            }
-        }
-        super().__init__(**kwargs)
-    @ensure_contiguous_state
-    def array_call(self, raw_state, timestep):
-        """
-        Get convective heating and moistening.
-        Args:
-            raw_state (dict):
-                The state dictionary of numpy arrays satisfying this
-                component's input properties.
-        Returns:
-            tendencies (dict), diagnostics (dict):
-                * The heating and moistening tendencies
-                * Any diagnostics associated.
-        """
-        self._set_fortran_constants()
-
-        num_cols, num_levs = raw_state['air_temperature'].shape
-
-        max_conv_level = num_levs - 3
-
-        tendencies = initialize_numpy_arrays_with_properties(
-            self.tendency_properties, raw_state, self.input_properties
-        )
-        diagnostics = initialize_numpy_arrays_with_properties(
-            self.diagnostic_properties, raw_state, self.input_properties
-        )
-
-        q_sat = bolton_q_sat(
-            raw_state['air_temperature'],
-            raw_state['air_pressure'] * 100,
-            self._Cpd, self._Cpv
-        )
-
-        _emanuel_convection.convect(
-            num_levs,
-            num_cols,
-            max_conv_level,
-            self._ntracers,
-            timestep.total_seconds(),
-            raw_state['air_temperature'],
-            raw_state['specific_humidity'],
-            q_sat,
-            raw_state['eastward_wind'],
-            raw_state['northward_wind'],
-            raw_state['air_pressure'],
-            raw_state['air_pressure_on_interface_levels'],
-            diagnostics['convective_state'],
-            diagnostics['convective_precipitation_rate'],
-            diagnostics['convective_downdraft_velocity_scale'],
-            diagnostics['convective_downdraft_temperature_scale'],
-            diagnostics['convective_downdraft_specific_humidity_scale'],
-            raw_state['cloud_base_mass_flux'],
-            diagnostics['atmosphere_convective_available_potential_energy'],
-            tendencies['air_temperature'],
-            tendencies['specific_humidity'],
-            tendencies['eastward_wind'],
-            tendencies['northward_wind'])
-
-        diagnostics['air_temperature_tendency_from_convection'][:] = (
-            tendencies['air_temperature'])
-        diagnostics['specific_humidity_tendency_from_convection'][:] = (
-            tendencies['specific_humidity'])
-        diagnostics['eastward_wind_tendency_from_convection'][:] = (
-            tendencies['eastward_wind'])
-        diagnostics['northward_wind_tendency_from_convection'][:] = (
-            tendencies['northward_wind'])
-        diagnostics['cloud_base_mass_flux'][:] = raw_state['cloud_base_mass_flux']
-        return tendencies, diagnostics
