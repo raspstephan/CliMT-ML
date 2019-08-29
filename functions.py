@@ -26,10 +26,10 @@ import holoviews as hv
 input_vars = ['air_temperature', 'specific_humidity', 'eastward_wind', 'northward_wind', 
               'air_pressure']
 output_vars = [
-    'air_temperature_tendency_from_convection', 
-    'specific_humidity_tendency_from_convection', 
-    'eastward_wind_tendency_from_convection', 
-    'northward_wind_tendency_from_convection',
+    'air_temperature_tendency_from_EmanuelConvection', 
+    'specific_humidity_tendency_from_EmanuelConvection', 
+    'eastward_wind_tendency_from_EmanuelConvection',
+    'northward_wind_tendency_from_EmanuelConvection',
     'convective_precipitation_rate'
 ]
 
@@ -142,4 +142,14 @@ class MyModel():
         """Iterate over several time steps."""
         for i in tqdm(range(steps), disable=noprog):
             self.step()
+            
+def and_kua_sst(latitudes):
+    zeta = np.ones_like(latitudes)
+    lat_range = (latitudes > 5) & (latitudes <= 60)
+    zeta[lat_range] = (np.sin(np.pi * (latitudes - 5) / 110)**2)[lat_range]
+    lat_range = (latitudes >= -60) & (latitudes <= 5)
+    zeta[lat_range] = (np.sin(np.pi * (latitudes - 5) / 130)**2)[lat_range]
+    sst_c = 2 + 27/2*(2 - zeta - zeta**2)
+    sst_k = sst_c + 273.15
+    return sst_k
             
